@@ -1,0 +1,16 @@
+"metric","pair","test","p","effect","effect_name","p_holm"
+"MSE","SR vs BF","paired t",0.00179299140071849,0.702195606973276,"Cohen_dz",0.00537897420215548
+"MSE","CGP vs BF","Wilcoxon signed-rank",0.00905500465388982,0.524684779317124,"rank_biserial_r",0.0181100093077796
+"MSE","CGP vs SR","paired t",0.115235860808912,0.326870216635621,"Cohen_dz",0.115235860808912
+"NLPD","CGP vs SR","Wilcoxon signed-rank",0.131865247809365,0.304048102886333,"rank_biserial_r",0.395595743428095
+"NLPD","CGP vs BF","Wilcoxon signed-rank",0.501155479478209,0.137225249975248,"rank_biserial_r",1
+"NLPD","SR vs BF","paired t",0.593171234293649,-0.108295153018382,"Cohen_dz",1
+"Coverage","CGP vs BF","Wilcoxon signed-rank",0.000454824437468846,0.719442283431575,"rank_biserial_r",0.00136447331240654
+"Coverage","CGP vs SR","Wilcoxon signed-rank",0.00917614211955567,0.545743397554591,"rank_biserial_r",0.0183522842391113
+"Coverage","SR vs BF","Wilcoxon signed-rank",0.0229204318321037,0.498543800468044,"rank_biserial_r",0.0229204318321037
+"Width","CGP vs BF","paired t",1.06845616202595e-25,-9.92084595218453,"Cohen_dz",3.20536848607786e-25
+"Width","SR vs BF","paired t",6.442781052456e-22,-6.86840376573939,"Cohen_dz",1.2885562104912e-21
+"Width","CGP vs SR","paired t",8.99137460112799e-16,-3.72440870246657,"Cohen_dz",8.99137460112799e-16
+"Time","CGP vs SR","paired t",3.73028734886444e-32,-18.4940684233244,"Cohen_dz",1.11908620465933e-31
+"Time","CGP vs BF","Wilcoxon signed-rank",1.30706054780131e-05,0.874474632195206,"rank_biserial_r",2.61412109560261e-05
+"Time","SR vs BF","Wilcoxon signed-rank",1.30706054780131e-05,0.874474632195206,"rank_biserial_r",2.61412109560261e-05
