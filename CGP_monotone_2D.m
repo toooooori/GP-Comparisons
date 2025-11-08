@@ -1,22 +1,27 @@
 gpml_root = 'gpml';
 run(fullfile(gpml_root, 'startup.m'));
-clear; clc; close all; rng(42);
+clear; clc; close all;
+
+rng(42,'twister');
 
 n  = 50;
 x1 = rand(n,1);
 x2 = rand(n,1);
 y  = [x1 x2];
 
-%f_true = @(u,v) 1./(1+exp(-10*(u-0.4))) + 1./(1+exp(-10*(v-0.6)));
-f_true = @(u,v) exp(u) + v + sin(20*v - 10)./20;
+f_true = @(u,v) 1./(1+exp(-10*(u-0.4))) + 1./(1+exp(-10*(v-0.6)));
+%f_true = @(u,v) exp(u) + v + sin(20*v - 10)./20;
 sigma   = 0.5;
 epsilon = sigma * randn(n,1);
 X       = f_true(x1, x2) + epsilon;
 
-g = linspace(0,1,100);
-[yt1, yt2] = meshgrid(g, g);
-yt = [yt1(:) yt2(:)];
-nstar = size(yt,1);
+g_cand = linspace(0,1,50);        
+[yc1, yc2] = meshgrid(g_cand, g_cand);
+yt_cand = [yc1(:) yc2(:)];
+
+g_pred = linspace(0,1,50);
+[yp1, yp2] = meshgrid(g_pred, g_pred);
+yt_pred = [yp1(:) yp2(:)];
 
 meanfunc = {@meanConst};   hyp.mean = 0;
 covfunc  = {@covSEard};    hyp.cov  = [0, 0, 0];
@@ -26,52 +31,36 @@ likfunc  = {@likGauss};    hyp.lik  = -inf;
 
 dj = 2;
 tAll = tic;
-yt_s = CGP_BS_2D(hyp_sol, X, y, yt, dj);
+yt_s = CGP_BS_2D(hyp_sol, X, y, yt_cand, dj);
 
-Zval = Gibbs_CGP_2D(hyp_sol, X, y, yt, yt_s, dj);
-validCols = all(~isnan(Zval), 1);
-Zval = Zval(:, validCols); 
+[mu_cgp, var_pt] = Gibbs_CGP_2D_mean(hyp_sol, X, y, yt_pred, yt_s, dj);
 
-mu_cgp = mean(Zval, 2);
-
-true_on_grid = f_true(yt1, yt2);
+true_on_grid = f_true(yp1, yp2);
 mse = mean((mu_cgp - true_on_grid(:)).^2);
 elapsedTime = toc(tAll);
 
 fprintf('Test-grid MSE = %.6f\n', mse);
-fprintf('Time (sec): %.4f ± %.4f\n', elapsedTime);
-Mu = reshape(mu_cgp, size(yt1));
-Real = reshape(true_on_grid, size(yt1));
+fprintf('Time (sec): %.4f\n', elapsedTime);
+
+Mu   = reshape(mu_cgp, size(yp1));
+Real = true_on_grid;
+
 figure;
-mesh(yt1, yt2, Mu, 'FaceColor', 'b', 'EdgeColor', 'b');
-hold on;
-mesh(yt1, yt2, Real, 'FaceColor', 'r', 'EdgeColor', 'r');
-hold off;
+mesh(yp1, yp2, Mu, 'FaceColor', 'b', 'EdgeColor', 'b'); hold on;
+mesh(yp1, yp2, Real, 'FaceColor', 'r', 'EdgeColor', 'r'); hold off;
 legend('Predicted mean', 'True function', 'Location', 'Best');
 
 
-function Zval = Gibbs_CGP_2D(hyp_sol, X, y, yt, yt_s, dj)
-% Gibbs_CGP_2D  — Gibbs sampler for 2D Constrained GP with derivative
-%                  monotonicity constraints.
+
+function [mu_hat, var_pt] = Gibbs_CGP_2D_mean(hyp_sol, X, y, yt, yt_s, dj)
+% Gibbs_CGP_2D_mean — 2D CGP with derivative monotonicity constraints:
+%                      compute ONLY the posterior mean (optionally pointwise variance).
 %
-% Key accelerations:
-%   (1) Cholesky of the predictive covariance (Lambda_sig) is computed
-%       once outside the Gibbs loop.
-%   (2) Conditional updates of derivative variables use a precomputed
-%       precision matrix Q = K3^{-1} instead of repeatedly forming
-%       submatrix Cholesky factorizations.
-%
-% Inputs:
-%   hyp_sol : learned hyperparameters (from GPML minimize)
-%   X       : training targets, size [n x 1]
-%   y       : training inputs, size [n x d]
-%   yt      : prediction grid inputs, size [nstar x d]
-%   yt_s    : selected constraint locations (where derivative is forced >=0)
-%   dj      : which input dimension the monotonic constraint applies to
-%
-% Output:
-%   Zval    : posterior samples of f(yt) from the 2nd half of the Gibbs chain
-%             (columns 501:1000)
+% Key idea: keep the Gibbs on derivative variables Z' (dimension m, small),
+%           but DO NOT sample the full field f(yt). Instead, at each
+%           iteration compute the closed-form conditional mean Z_mu and
+%           average across iterations. This avoids the (nstar x nstar)
+%           Cholesky and per-iteration triangular multiplies.
 
 % ---------------- Sizes ----------------
 n     = size(y, 1);
@@ -85,7 +74,7 @@ L_ys  = jitterchol(Kdd_ys);
 % Posterior of derivative process Z'(·)
 mean_dX    = (L_ys' \ (L_ys \ Kd_ysy))';     % A
 cov_dX     = K_yy - mean_dX * Kd_ysy;        % B
-temp_covdX = jitterchol(cov_dX);             % chol(B)
+L_dX       = jitterchol(cov_dX);             % chol(B) for stable solves
 
 % ---------- Joint covariances for f(y) and f(yt) ----------
 [K_ytyt, Kd_ytys, ~, Kd_ysyt] = covSEard_GP(hyp_sol.cov, yt, yt_s, dj);
@@ -105,62 +94,52 @@ Lambda_12 = Lambda(1:n,           n+1:n+nstar);
 Lambda_21 = Lambda(n+1:n+nstar,   1:n);
 Lambda_22 = Lambda(n+1:n+nstar,   n+1:n+nstar);
 
-L_Lb      = jitterchol(Lambda_11);
-v_Lb      = L_Lb \ Lambda_12;
-Lambda_sig= Lambda_22 - v_Lb' * v_Lb;
+L_Lb   = jitterchol(Lambda_11);
+v_Lb   = L_Lb \ Lambda_12;
 
-% ---------- Derivative covariance K3 ----------
+% pointwise variance (optional): diag(Lambda_sig) without forming chol
+Lambda_sig_diag = diag(Lambda_22) - sum(v_Lb.^2, 1)';  % equals diag(Lambda_22 - v_Lb'*v_Lb)
+
+% ---------- Derivative covariance precision Q ----------
 K3  = Kdd_ys;
+R   = jitterchol(K3);                  % K3 = R R'
+I_m = eye(m);
+Q   = R' \ (R \ I_m);                  % numerical inverse (precision)
+Q   = (Q + Q')/2;                      % symmetrize
 
-% Precompute Cholesky of Lambda_sig once
-L_sig = jitterchol(Lambda_sig);
+% ---------------- Gibbs on Z' (small m) ----------------
+M       = 10000;
+burnin  = 5000;
+sum_mu  = zeros(nstar,1);
+nsamp   = 0;
 
-% Precompute precision Q = inv(K3) once
-R  = jitterchol(K3);            % K3 = R * R'
-I_m= eye(m);
-Q  = R' \ (R \ I_m);            % numerical inverse
-Q  = (Q + Q')/2;                % symmetrize
-
-% ---------------- Gibbs Sampling ----------------
-M    = 1000;
-Z    = zeros(nstar, M);         % samples of f(yt)
-Zd   = zeros(m,     M);         % samples of derivative Z'(yt_s)
-Zd_p = zeros(m,     M);         % truncated / projected derivative
-
-mu_lam = hyp_sol.mean * ones(n + nstar, 1);
+mu_lam  = hyp_sol.mean * ones(n + nstar, 1);
+Zd      = zeros(m, 1);                 % can be warm-started if desired
+Zd_p    = max(Zd, 0);
 
 for k = 2:M
-
-    mu_m    = zeros(m,1);       % conditional means for Zd(i)
-    nu_m    = zeros(m,1);       % conditional variances for Zd(i)
-    theta_m = zeros(m,1);       % posterior proposal mean
-    delta_m = zeros(m,1);       % posterior proposal std
-
     % --- coordinate-wise Gibbs updates for derivative process Zd ---
     for i = 1:m
         % Conditional for Zd(i) | Zd(-i) via precision matrix Q
         Qi_i    = Q(i,i);
-        Qi_rest = Q(i,:);  Qi_rest(i) = [];  % Q_{i,-i}
+        Qi_rest = Q(i,:);  Qi_rest(i) = [];
 
         if i > 1 && i < m
-            z_rest  = [Zd(1:i-1, k); Zd(i+1:m, k-1)];
-            z_restp = [Zd_p(1:i-1, k); Zd_p(i+1:m, k-1)];
+            z_rest  = [Zd(1:i-1); Zd(i+1:m)];
+            z_restp = [Zd_p(1:i-1); Zd_p(i+1:m)];
         elseif i == 1
-            z_rest  = Zd(2:m, k-1);
-            z_restp = Zd_p(2:m, k-1);
+            z_rest  = Zd(2:m);
+            z_restp = Zd_p(2:m);
         else
-            z_rest  = Zd(1:m-1, k);
-            z_restp = Zd_p(1:m-1, k);
+            z_rest  = Zd(1:m-1);
+            z_restp = Zd_p(1:m-1);
         end
 
         mu_i    = -(Qi_rest / Qi_i) * z_rest;
         nu_i    =  1 / Qi_i;
         nu_sqrt = sqrt(nu_i);
 
-        mu_m(i) = mu_i;
-        nu_m(i) = nu_i;
-
-        % Posterior "proposal" terms using cov_dX
+        % Posterior "proposal" terms using L_dX (chol of cov_dX)
         temp_a  = mean_dX(:, i);
         if i == 1
             temp_A = mean_dX(:, 2:m);
@@ -170,54 +149,47 @@ for k = 2:M
             temp_A = [mean_dX(:, 1:i-1), mean_dX(:, i+1:m)];
         end
 
-        v_dX     = temp_covdX \ temp_a;
+        v_dX     = L_dX \ temp_a;
         temp_th1 = (X - hyp_sol.mean) - temp_A * z_restp;
-        alpha_dX = temp_covdX' \ (temp_covdX \ temp_th1);
+        alpha_dX = L_dX' \ (L_dX \ temp_th1);
 
-        temp_th  = temp_a' * alpha_dX + mu_m(i) * (1/nu_m(i));
-        temp_dt1 = (1/nu_m(i)) + (v_dX' * v_dX);
+        temp_th  = temp_a' * alpha_dX + mu_i * (1/nu_i);
+        temp_dt1 = (1/nu_i) + (v_dX' * v_dX);
         temp_dt  = 1 / temp_dt1;
 
-        theta_m(i) = temp_dt * temp_th;
-        delta_m(i) = sqrt(temp_dt);
+        theta_i  = temp_dt * temp_th;
+        delta_i  = sqrt(temp_dt);
 
-        % Truncated/mixture sampling to enforce monotonicity (Zd_p >= 0)
+        % Mixture truncation to enforce Zd_p >= 0
         eps_val  = 0;
-        temp_ks  = normcdf(eps_val, mu_m(i), nu_sqrt);
-        temp_qx  = 1 - normcdf(eps_val, theta_m(i), delta_m(i));
+        temp_ks  = normcdf(eps_val, mu_i,    nu_sqrt);
+        temp_qx  = 1 - normcdf(eps_val, theta_i, delta_i);
 
-        temp_const = temp_qx * sqrt(delta_m(i)/nu_sqrt) * ...
-            exp( -mu_m(i)^2/(2*nu_m(i)) + theta_m(i)^2/(2*temp_dt) );
+        temp_const = temp_qx * sqrt(delta_i/nu_sqrt) * ...
+            exp( -mu_i^2/(2*nu_i) + theta_i^2/(2*temp_dt) );
 
         q_const = temp_const / (temp_ks + temp_const);
         if isinf(temp_const), q_const = 1; end
-        if isnan(q_const)
-            warning('NaN in mixture weight');
-            q_const = 0.5;
-        end
+        if isnan(q_const),    q_const = 0.5; end
         if temp_ks == 0 && temp_const == 0
-            temp_ks = 1e-6;
-            q_const = temp_const / (temp_ks + temp_const);
+            temp_ks = 1e-6; q_const = temp_const / (temp_ks + temp_const);
         end
 
-        % Bernoulli branch
-        draw_flag = binornd(1, q_const);
-
-        if draw_flag == 1
-            % sample from truncated N(mu_m, nu_m) below 0
-            u        = temp_ks * rand(1);
-            Zd(i,k)  = norminv(u, mu_m(i), nu_sqrt);
-            Zd_p(i,k)= 0;
+        if rand < q_const
+            % sample from truncated N(mu_i, nu_i) below 0
+            u      = temp_ks * rand(1);
+            Zd(i)  = norminv(u, mu_i, nu_sqrt);
+            Zd_p(i)= 0;
         else
-            % sample from truncated N(theta_m, delta_m) above 0
-            u        = 1 - (temp_qx - temp_qx*rand(1));
-            Zd(i,k)  = norminv(u, theta_m(i), delta_m(i));
-            Zd_p(i,k)= Zd(i,k);
+            % sample from truncated N(theta_i, delta_i) above 0
+            u      = 1 - (temp_qx - temp_qx * rand(1));
+            Zd(i)  = norminv(u, theta_i, delta_i);
+            Zd_p(i)= Zd(i);
         end
     end
 
-    % --- Conditional Gaussian for f(yt) given Zd_p ---
-    alpha_K3 = L_ys' \ (L_ys \ Zd_p(:,k));
+    % --- Closed-form conditional mean for f(yt) given current Zd_p ---
+    alpha_K3 = L_ys' \ (L_ys \ Zd_p);
     MU       = mu_lam + Sigma_12 * alpha_K3;  % joint mean [f(y); f(yt)]
 
     mu_z = MU(n+1 : n+nstar);   % mean at yt
@@ -225,14 +197,20 @@ for k = 2:M
 
     Z_mu = mu_z + Lambda_21 * (L_Lb' \ (L_Lb \ (X - mu_x)));
 
-    % Draw one sample of f(yt) using precomputed Cholesky
-    Z(:,k) = Z_mu + L_sig * randn(nstar, 1);
+    % --- Accumulate mean after burn-in (NO full-field sampling) ---
+    if k > burnin
+        if all(isfinite(Z_mu))
+        sum_mu = sum_mu + Z_mu;
+        nsamp  = nsamp + 1;
+        else
+        end
+    end
 end
 
-% Keep the latter half of samples (burn-in discarded)
-Zval = Z(:, 501:1000);
-
+mu_hat = sum_mu / max(nsamp, 1);
+var_pt = max(Lambda_sig_diag, 0);  % pointwise variance (optional)
 end
+
 
 function yt_s = CGP_BS_2D(hyp_sol, X, y, yt, dj)
 % CGP_BS_2D
